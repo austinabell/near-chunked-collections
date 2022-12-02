@@ -10,4 +10,4 @@
 #![warn(missing_docs)]
 
 pub mod vec;
-pub use vec::Vector;
+pub use vec::ChunkedVector;

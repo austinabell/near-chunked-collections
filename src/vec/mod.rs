@@ -110,7 +110,8 @@ fn expect_consistent_state<T>(val: Option<T>) -> T {
 /// vec.extend([1, 2, 3].iter().copied());
 /// assert!(Iterator::eq(vec.into_iter(), [7, 1, 2, 3].iter()));
 /// ```
-pub struct Vector<T>
+// TODO decide on a default chunk size
+pub struct ChunkedVector<T, const N: usize = 5>
 where
     T: BorshSerialize,
 {
@@ -120,7 +121,7 @@ where
 
 //? Manual implementations needed only because borsh derive is leaking field types
 // https://github.com/near/borsh-rs/issues/41
-impl<T> BorshSerialize for Vector<T>
+impl<T, const N: usize> BorshSerialize for ChunkedVector<T, N>
 where
     T: BorshSerialize,
 {
@@ -128,13 +129,14 @@ where
         &self,
         writer: &mut W,
     ) -> Result<(), borsh::maybestd::io::Error> {
+        println!("serializing");
         BorshSerialize::serialize(&self.len, writer)?;
         BorshSerialize::serialize(&self.values, writer)?;
         Ok(())
     }
 }
 
-impl<T> BorshDeserialize for Vector<T>
+impl<T, const N: usize> BorshDeserialize for ChunkedVector<T, N>
 where
     T: BorshSerialize,
 {
@@ -146,7 +148,7 @@ where
     }
 }
 
-impl<T> Vector<T>
+impl<T, const N: usize> ChunkedVector<T, N>
 where
     T: BorshSerialize,
 {
@@ -294,7 +296,7 @@ where
     }
 }
 
-impl<T> Vector<T>
+impl<T, const N: usize> ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -444,7 +446,7 @@ where
     /// assert_eq!(iterator.next(), Some(&4));
     /// assert_eq!(iterator.next(), None);
     /// ```
-    pub fn iter(&self) -> Iter<T> {
+    pub fn iter(&self) -> Iter<T, N> {
         Iter::new(self)
     }
 
@@ -464,7 +466,7 @@ where
     /// }
     /// assert_eq!(vec.iter().copied().collect::<Vec<_>>(), &[3u32, 4, 6]);
     /// ```
-    pub fn iter_mut(&mut self) -> IterMut<T> {
+    pub fn iter_mut(&mut self) -> IterMut<T, N> {
         IterMut::new(self)
     }
 
@@ -495,7 +497,7 @@ where
     /// vec.drain(..);
     /// assert!(vec.is_empty());
     /// ```
-    pub fn drain<R>(&mut self, range: R) -> Drain<T>
+    pub fn drain<R>(&mut self, range: R) -> Drain<T, N>
     where
         R: RangeBounds<u32>,
     {
@@ -526,7 +528,7 @@ where
     }
 }
 
-impl<T> fmt::Debug for Vector<T>
+impl<T, const N: usize> fmt::Debug for ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize + fmt::Debug,
 {
@@ -549,13 +551,13 @@ mod tests {
     use borsh::{BorshDeserialize, BorshSerialize};
     use rand::{Rng, RngCore, SeedableRng};
 
-    use super::Vector;
+    use super::ChunkedVector;
     use near_sdk::{store::index_map::IndexMap, test_utils::test_env::setup_free};
 
     #[test]
     fn test_push_pop() {
         let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
-        let mut vec = Vector::new(b"v".to_vec());
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![];
         for _ in 0..500 {
             let value = rng.gen::<u64>();
@@ -572,7 +574,7 @@ mod tests {
     #[test]
     pub fn test_replace() {
         let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(1);
-        let mut vec = Vector::new(b"v".to_vec());
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![];
         for _ in 0..500 {
             let value = rng.gen::<u64>();
@@ -596,7 +598,7 @@ mod tests {
     #[test]
     pub fn test_swap_remove() {
         let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(2);
-        let mut vec = Vector::new(b"v".to_vec());
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![];
         for _ in 0..500 {
             let value = rng.gen::<u64>();
@@ -621,7 +623,7 @@ mod tests {
     #[test]
     pub fn test_clear() {
         let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(3);
-        let mut vec = Vector::new(b"v".to_vec());
+        let mut vec = ChunkedVector::<_>::new(b"v");
         for _ in 0..100 {
             for _ in 0..(rng.gen::<u64>() % 20 + 1) {
                 let value = rng.gen::<u64>();
@@ -636,7 +638,7 @@ mod tests {
     #[test]
     pub fn test_extend() {
         let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(0);
-        let mut vec = Vector::new(b"v".to_vec());
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![];
         for _ in 0..100 {
             let value = rng.gen::<u64>();
@@ -660,8 +662,8 @@ mod tests {
     #[test]
     fn test_debug() {
         let mut rng = rand_xorshift::XorShiftRng::seed_from_u64(4);
-        let prefix = b"v".to_vec();
-        let mut vec = Vector::new(prefix.clone());
+        let prefix = b"v";
+        let mut vec = ChunkedVector::<_>::new(prefix);
         let mut baseline = vec![];
         for _ in 0..10 {
             let value = rng.gen::<u64>();
@@ -689,7 +691,7 @@ mod tests {
         #[derive(Debug, BorshSerialize, BorshDeserialize)]
         struct TestType(u64);
 
-        let deserialize_only_vec = Vector::<TestType> {
+        let deserialize_only_vec = ChunkedVector::<TestType> {
             len: vec.len(),
             values: IndexMap::new(prefix),
         };
@@ -712,7 +714,7 @@ mod tests {
 
     #[test]
     pub fn iterator_checks() {
-        let mut vec = Vector::new(b"v");
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![];
         for i in 0..10 {
             vec.push(i);
@@ -739,7 +741,7 @@ mod tests {
 
     #[test]
     fn drain_iterator() {
-        let mut vec = Vector::new(b"v");
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         vec.extend(baseline.clone());
 
@@ -771,7 +773,7 @@ mod tests {
         assert!(Iterator::eq(vec.drain(..), baseline.drain(..)));
 
         // Test double ended iterator functions
-        let mut vec = Vector::new(b"v");
+        let mut vec = ChunkedVector::<_>::new(b"v");
         let mut baseline = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
         vec.extend(baseline.clone());
 
@@ -813,7 +815,7 @@ mod tests {
             near_sdk::mock::with_mocked_blockchain(|b| b.take_storage());
             rng.fill_bytes(&mut buf);
 
-            let mut sv = Vector::new(b"v");
+            let mut sv = ChunkedVector::<_>::new(b"v");
             let mut mv = Vec::new();
             let u = Unstructured::new(&buf);
             if let Ok(ops) = Vec::<Op>::arbitrary_take_rest(u) {
@@ -855,7 +857,7 @@ mod tests {
                         }
                         Op::Reset => {
                             let serialized = sv.try_to_vec().unwrap();
-                            sv = Vector::deserialize(&mut serialized.as_slice()).unwrap();
+                            sv = ChunkedVector::deserialize(&mut serialized.as_slice()).unwrap();
                         }
                         Op::Get(k) => {
                             let r1 = sv.get(k);
@@ -884,18 +886,18 @@ mod tests {
     fn serialized_bytes() {
         use borsh::{BorshDeserialize, BorshSerialize};
 
-        let mut vec = Vector::new(b"v".to_vec());
+        let mut vec = ChunkedVector::<_>::new(b"v");
         vec.push("Some data");
         let serialized = vec.try_to_vec().unwrap();
 
         // Expected to serialize len then prefix
         let mut expected_buf = Vec::new();
         1u32.serialize(&mut expected_buf).unwrap();
-        (b"v".to_vec()).serialize(&mut expected_buf).unwrap();
+        (&b"v"[..]).serialize(&mut expected_buf).unwrap();
 
         assert_eq!(serialized, expected_buf);
         drop(vec);
-        let vec = Vector::<String>::deserialize(&mut serialized.as_slice()).unwrap();
+        let vec = ChunkedVector::<String>::deserialize(&mut serialized.as_slice()).unwrap();
         assert_eq!(vec[0], "Some data");
     }
 }

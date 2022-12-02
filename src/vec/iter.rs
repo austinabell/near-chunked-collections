@@ -1,26 +1,26 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 use core::{iter::FusedIterator, ops::Range};
 
-use super::{Vector, ERR_INDEX_OUT_OF_BOUNDS};
+use super::{ChunkedVector, ERR_INDEX_OUT_OF_BOUNDS};
 use near_sdk::env;
 
 /// An iterator over references to each element in the stored vector.
 #[derive(Debug)]
-pub struct Iter<'a, T>
+pub struct Iter<'a, T, const N: usize>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     /// Underlying vector to iterate through
-    vec: &'a Vector<T>,
+    vec: &'a ChunkedVector<T, N>,
     /// Range of indices to iterate.
     range: Range<u32>,
 }
 
-impl<'a, T> Iter<'a, T>
+impl<'a, T, const N: usize> Iter<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
-    pub(super) fn new(vec: &'a Vector<T>) -> Self {
+    pub(super) fn new(vec: &'a ChunkedVector<T, N>) -> Self {
         Self {
             vec,
             range: Range {
@@ -36,7 +36,7 @@ where
     }
 }
 
-impl<'a, T> Iterator for Iter<'a, T>
+impl<'a, T, const N: usize> Iterator for Iter<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -65,10 +65,10 @@ where
     }
 }
 
-impl<'a, T> ExactSizeIterator for Iter<'a, T> where T: BorshSerialize + BorshDeserialize {}
-impl<'a, T> FusedIterator for Iter<'a, T> where T: BorshSerialize + BorshDeserialize {}
+impl<'a, T, const N: usize> ExactSizeIterator for Iter<'a, T, N> where T: BorshSerialize + BorshDeserialize {}
+impl<'a, T, const N: usize> FusedIterator for Iter<'a, T, N> where T: BorshSerialize + BorshDeserialize {}
 
-impl<'a, T> DoubleEndedIterator for Iter<'a, T>
+impl<'a, T, const N: usize> DoubleEndedIterator for Iter<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -88,22 +88,22 @@ where
 
 /// An iterator over exclusive references to each element of a stored vector.
 #[derive(Debug)]
-pub struct IterMut<'a, T>
+pub struct IterMut<'a, T, const N: usize>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     /// Mutable reference to vector used to iterate through.
-    vec: &'a mut Vector<T>,
+    vec: &'a mut ChunkedVector<T, N>,
     /// Range of indices to iterate.
     range: Range<u32>,
 }
 
-impl<'a, T> IterMut<'a, T>
+impl<'a, T, const N: usize> IterMut<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     /// Creates a new iterator for the given storage vector.
-    pub(crate) fn new(vec: &'a mut Vector<T>) -> Self {
+    pub(crate) fn new(vec: &'a mut ChunkedVector<T, N>) -> Self {
         let end = vec.len();
         Self {
             vec,
@@ -117,7 +117,7 @@ where
     }
 }
 
-impl<'a, T> IterMut<'a, T>
+impl<'a, T, const N: usize> IterMut<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -132,7 +132,7 @@ where
     }
 }
 
-impl<'a, T> Iterator for IterMut<'a, T>
+impl<'a, T, const N: usize> Iterator for IterMut<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -160,10 +160,10 @@ where
     }
 }
 
-impl<'a, T> ExactSizeIterator for IterMut<'a, T> where T: BorshSerialize + BorshDeserialize {}
-impl<'a, T> FusedIterator for IterMut<'a, T> where T: BorshSerialize + BorshDeserialize {}
+impl<'a, T, const N: usize> ExactSizeIterator for IterMut<'a, T, N> where T: BorshSerialize + BorshDeserialize {}
+impl<'a, T, const N: usize> FusedIterator for IterMut<'a, T, N> where T: BorshSerialize + BorshDeserialize {}
 
-impl<'a, T> DoubleEndedIterator for IterMut<'a, T>
+impl<'a, T, const N: usize> DoubleEndedIterator for IterMut<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -182,24 +182,24 @@ where
 
 /// A draining iterator for [`Vector<T>`].
 #[derive(Debug)]
-pub struct Drain<'a, T>
+pub struct Drain<'a, T, const N: usize>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     /// Mutable reference to vector used to iterate through.
-    vec: &'a mut Vector<T>,
+    vec: &'a mut ChunkedVector<T, N>,
     /// Range of indices to iterate.
     range: Range<u32>,
     /// Range of elements to delete.
     delete_range: Range<u32>,
 }
 
-impl<'a, T> Drain<'a, T>
+impl<'a, T, const N: usize> Drain<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     /// Creates a new iterator for the given storage vector.
-    pub(crate) fn new(vec: &'a mut Vector<T>, range: Range<u32>) -> Self {
+    pub(crate) fn new(vec: &'a mut ChunkedVector<T, N>, range: Range<u32>) -> Self {
         Self {
             vec,
             delete_range: range.clone(),
@@ -220,7 +220,7 @@ where
     }
 }
 
-impl<'a, T> Drop for Drain<'a, T>
+impl<'a, T, const N: usize> Drop for Drain<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -244,7 +244,7 @@ where
     }
 }
 
-impl<'a, T> Iterator for Drain<'a, T>
+impl<'a, T, const N: usize> Iterator for Drain<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -278,10 +278,10 @@ where
     }
 }
 
-impl<'a, T> ExactSizeIterator for Drain<'a, T> where T: BorshSerialize + BorshDeserialize {}
-impl<'a, T> FusedIterator for Drain<'a, T> where T: BorshSerialize + BorshDeserialize {}
+impl<'a, T, const N: usize> ExactSizeIterator for Drain<'a, T, N> where T: BorshSerialize + BorshDeserialize {}
+impl<'a, T, const N: usize> FusedIterator for Drain<'a, T, N> where T: BorshSerialize + BorshDeserialize {}
 
-impl<'a, T> DoubleEndedIterator for Drain<'a, T>
+impl<'a, T, const N: usize> DoubleEndedIterator for Drain<'a, T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {

@@ -1,10 +1,10 @@
 use borsh::{BorshDeserialize, BorshSerialize};
 
 use super::iter::{Iter, IterMut};
-use super::{Vector, ERR_INDEX_OUT_OF_BOUNDS};
+use super::{ChunkedVector, ERR_INDEX_OUT_OF_BOUNDS};
 use near_sdk::env;
 
-impl<T> Drop for Vector<T>
+impl<T, const N: usize> Drop for ChunkedVector<T, N>
 where
     T: BorshSerialize,
 {
@@ -13,31 +13,31 @@ where
     }
 }
 
-impl<'a, T> IntoIterator for &'a Vector<T>
+impl<'a, T, const N: usize> IntoIterator for &'a ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     type Item = &'a T;
-    type IntoIter = Iter<'a, T>;
+    type IntoIter = Iter<'a, T, N>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
 }
 
-impl<'a, T> IntoIterator for &'a mut Vector<T>
+impl<'a, T, const N: usize> IntoIterator for &'a mut ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
     type Item = &'a mut T;
-    type IntoIter = IterMut<'a, T>;
+    type IntoIter = IterMut<'a, T, N>;
 
     fn into_iter(self) -> Self::IntoIter {
         self.iter_mut()
     }
 }
 
-impl<T> Extend<T> for Vector<T>
+impl<T, const N: usize> Extend<T> for ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -51,7 +51,7 @@ where
     }
 }
 
-impl<T> core::ops::Index<u32> for Vector<T>
+impl<T, const N: usize> core::ops::Index<u32> for ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
@@ -63,7 +63,7 @@ where
     }
 }
 
-impl<T> core::ops::IndexMut<u32> for Vector<T>
+impl<T, const N: usize> core::ops::IndexMut<u32> for ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
 {
