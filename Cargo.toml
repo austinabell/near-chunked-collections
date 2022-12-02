@@ -4,3 +4,15 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+borsh = "0.9.3"
+near-sdk = { version = "4.1.1", default-features = false, features = ["unstable"] }
+
+[dev-dependencies]
+rand_xorshift = "0.3.0"
+near-sdk = { version = "4.1.1", default-features = false, features = ["unit-testing", "unstable"] }
+rand = "0.8.5"
+arbitrary = { version = ">=1.0, <1.1.4", features = ["derive"] }
+derive_arbitrary = ">=1.0, <=1.1.6"
+
+[patch.crates-io]
+near-sdk = { git = "https://github.com/austinabell/near-sdk-rs", rev = "d8eebeed7aa2ab9946c86ae2743772e29186574d" }
