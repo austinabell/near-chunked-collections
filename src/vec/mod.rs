@@ -78,7 +78,7 @@ fn chunk_index<const N: usize>(index: u32) -> u32 {
 }
 
 fn chunk_pos<const N: usize>(index: u32) -> usize {
-    (index as usize % N) as usize
+    index as usize % N
 }
 
 /// An iterable implementation of vector that stores its content on the trie. This implementation
