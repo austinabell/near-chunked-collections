@@ -56,10 +56,7 @@ mod impls;
 mod iter;
 
 use core::mem::MaybeUninit;
-use std::{
-    fmt,
-    // ops::{Bound, Range, RangeBounds},
-};
+use std::fmt;
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
@@ -901,7 +898,7 @@ mod tests {
         // Expected to serialize len then prefix
         let mut expected_buf = Vec::new();
         1u32.serialize(&mut expected_buf).unwrap();
-        (&b"v"[..]).serialize(&mut expected_buf).unwrap();
+        (b"v"[..]).serialize(&mut expected_buf).unwrap();
 
         assert_eq!(serialized, expected_buf);
         drop(vec);
