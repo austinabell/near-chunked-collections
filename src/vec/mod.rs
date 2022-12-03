@@ -55,14 +55,16 @@
 mod impls;
 mod iter;
 
+use core::mem::MaybeUninit;
 use std::{
     fmt,
-    ops::{Bound, Range, RangeBounds},
+    // ops::{Bound, Range, RangeBounds},
 };
 
 use borsh::{BorshDeserialize, BorshSerialize};
 
-pub use self::iter::{Drain, Iter, IterMut};
+// pub use self::iter::{Drain, Iter, IterMut};
+pub use self::iter::{Iter, IterMut};
 use near_sdk::{env, IntoStorageKey};
 
 use near_sdk::store::index_map::IndexMap;
@@ -70,7 +72,16 @@ use near_sdk::store::index_map::IndexMap;
 const ERR_INDEX_OUT_OF_BOUNDS: &str = "Index out of bounds";
 
 fn expect_consistent_state<T>(val: Option<T>) -> T {
-    val.unwrap_or_else(|| env::abort())
+    val.unwrap_or_else(|| env::panic_str("inconsistent state"))
+}
+
+fn chunk_index<const N: usize>(index: u32) -> u32 {
+    // TODO yeah this is a bit unsafe if N is > 32 bits range. Fix
+    (index as usize / N) as u32
+}
+
+fn chunk_pos<const N: usize>(index: u32) -> usize {
+    (index as usize % N) as usize
 }
 
 /// An iterable implementation of vector that stores its content on the trie. This implementation
@@ -116,7 +127,17 @@ where
     T: BorshSerialize,
 {
     pub(crate) len: u32,
-    pub(crate) values: IndexMap<T>,
+    // TODO this can theoretically be IndexMap<[MaybeUninit<T>; N]> to avoid using Default
+    pub(crate) values: IndexMap<[T; N]>,
+}
+
+impl<T, const N: usize> Drop for ChunkedVector<T, N>
+where
+    T: BorshSerialize,
+{
+    fn drop(&mut self) {
+        self.flush()
+    }
 }
 
 //? Manual implementations needed only because borsh derive is leaking field types
@@ -129,7 +150,6 @@ where
         &self,
         writer: &mut W,
     ) -> Result<(), borsh::maybestd::io::Error> {
-        println!("serializing");
         BorshSerialize::serialize(&self.len, writer)?;
         BorshSerialize::serialize(&self.values, writer)?;
         Ok(())
@@ -238,38 +258,12 @@ where
     pub fn flush(&mut self) {
         self.values.flush();
     }
+}
 
-    /// Sets a value at a given index to the value provided. This does not shift values after the
-    /// index to the right.
-    ///
-    /// The reason to use this over modifying with [`Vector::get_mut`] or
-    /// [`IndexMut::index_mut`](core::ops::IndexMut::index_mut) is to avoid loading the existing
-    /// value from storage. This method will just write the new value.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `index` is out of bounds.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use near_sdk::store::Vector;
-    ///
-    /// let mut vec = Vector::new(b"v");
-    /// vec.push("test".to_string());
-    ///
-    /// vec.set(0,"new_value".to_string());
-    ///
-    /// assert_eq!(vec.get(0),Some(&"new_value".to_string()));
-    /// ```
-    pub fn set(&mut self, index: u32, value: T) {
-        if index >= self.len() {
-            env::panic_str(ERR_INDEX_OUT_OF_BOUNDS);
-        }
-
-        self.values.set(index, Some(value));
-    }
-
+impl<T, const N: usize> ChunkedVector<T, N>
+where
+    T: BorshSerialize + BorshDeserialize,
+{
     /// Appends an element to the back of the collection.
     ///
     /// # Panics
@@ -292,14 +286,24 @@ where
             .len
             .checked_add(1)
             .unwrap_or_else(|| env::panic_str(ERR_INDEX_OUT_OF_BOUNDS));
-        self.set(last_idx, element)
-    }
-}
 
-impl<T, const N: usize> ChunkedVector<T, N>
-where
-    T: BorshSerialize + BorshDeserialize,
-{
+        let chunk_idx = chunk_index::<N>(last_idx);
+        let chunk_pos = chunk_pos::<N>(last_idx);
+        if chunk_pos == 0 {
+            // Push is on new chunk, create new chunk
+            let chunk = MaybeUninit::<[T; N]>::zeroed();
+            // TODO this is unsafe for drop impls on zeroed data. Fix for actual use
+            let mut chunk = unsafe { chunk.assume_init() };
+            chunk[0] = element;
+            self.values.set(chunk_idx, Some(chunk));
+        } else {
+            // Chunk already exists, update the index in the chunk.
+            // TODO would be ideal to be able to replace the data only at the index, not deserialize
+            // TODO ..the whole chunk. This would require fixed serialization sizes, though.
+            expect_consistent_state(self.values.get_mut(chunk_idx))[chunk_pos] = element;
+        }
+    }
+
     /// Returns the element by index or `None` if it is not present.
     ///
     /// # Examples
@@ -317,7 +321,10 @@ where
         if index >= self.len() {
             return None;
         }
-        self.values.get(index)
+
+        self.values
+            .get(chunk_index::<N>(index))
+            .map(|chunk| &chunk[chunk_pos::<N>(index)])
     }
 
     /// Returns a mutable reference to the element at the `index` provided.
@@ -342,7 +349,10 @@ where
         if index >= self.len {
             return None;
         }
-        self.values.get_mut(index)
+
+        self.values
+            .get_mut(chunk_index::<N>(index))
+            .map(|chunk| &mut chunk[chunk_pos::<N>(index)])
     }
 
     fn swap(&mut self, a: u32, b: u32) {
@@ -350,7 +360,24 @@ where
             env::panic_str(ERR_INDEX_OUT_OF_BOUNDS);
         }
 
-        self.values.swap(a, b);
+        if a == b {
+            return;
+        }
+
+        let a_idx = chunk_index::<N>(a);
+        if a_idx == chunk_index::<N>(b) {
+            // Values are on the same chunk, swap.
+            let chunk = self.values.get_mut(a_idx).unwrap();
+            chunk.swap(chunk_pos::<N>(a), chunk_pos::<N>(b));
+        } else {
+            // Values are on different chunks, swap across chunks.
+            // TODO maybe a cleaner or safer way to do this.
+            let a_mut: &mut T =
+                unsafe { &mut *(expect_consistent_state(self.get_mut(a)) as *mut _) };
+            let b_mut = expect_consistent_state(self.get_mut(b));
+
+            core::mem::swap(a_mut, b_mut);
+        }
     }
 
     /// Removes an element from the vector and returns it.
@@ -399,34 +426,22 @@ where
     /// ```
     pub fn pop(&mut self) -> Option<T> {
         let new_idx = self.len.checked_sub(1)?;
-        let prev = self.values.remove(new_idx);
+        let pop_position = chunk_pos::<N>(new_idx);
+        let prev = if pop_position == 0 {
+            // The element being popped is only one in chunk, remove the chunk and return the first
+            // element, which is the one being popped.
+            expect_consistent_state(self.values.remove(chunk_index::<N>(new_idx)))
+                .into_iter()
+                .next()
+        } else {
+            // TODO this is broken to assume init for zeroed for faulty drop impls.
+            let zeroed_element = unsafe { MaybeUninit::<T>::zeroed().assume_init() };
+            self.values
+                .get_mut(chunk_index::<N>(new_idx))
+                .map(|chunk| core::mem::replace(&mut chunk[pop_position], zeroed_element))
+        };
         self.len = new_idx;
         prev
-    }
-
-    /// Inserts a element at `index`, returns an evicted element.
-    ///
-    /// # Panics
-    ///
-    /// If `index` is out of bounds.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use near_sdk::store::Vector;
-    ///
-    /// let mut vec = Vector::new(b"v");
-    /// vec.push("test".to_string());
-    ///
-    /// vec.replace(0,"replaced".to_string());
-    ///
-    /// assert_eq!(vec.get(0), Some(&"replaced".to_string()));
-    /// ```
-    pub fn replace(&mut self, index: u32, element: T) -> T {
-        if index >= self.len {
-            env::panic_str(ERR_INDEX_OUT_OF_BOUNDS);
-        }
-        self.values.insert(index, element).unwrap()
     }
 
     /// Returns an iterator over the vector. This iterator will lazily load any values iterated
@@ -470,62 +485,62 @@ where
         IterMut::new(self)
     }
 
-    /// Creates a draining iterator that removes the specified range in the vector
-    /// and yields the removed items.
-    ///
-    /// When the iterator **is** dropped, all elements in the range are removed
-    /// from the vector, even if the iterator was not fully consumed. If the
-    /// iterator **is not** dropped (with [`mem::forget`](std::mem::forget) for example),
-    /// the collection will be left in an inconsistent state.
-    ///
-    /// This will not panic on invalid ranges (`end > length` or `end < start`) and instead the
-    /// iterator will just be empty.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use near_sdk::store::Vector;
-    ///
-    /// let mut vec: Vector<u32> = Vector::new(b"v");
-    /// vec.extend(vec![1, 2, 3]);
-    ///
-    /// let u: Vec<_> = vec.drain(1..).collect();
-    /// assert_eq!(vec.iter().copied().collect::<Vec<_>>(), &[1]);
-    /// assert_eq!(u, &[2, 3]);
-    ///
-    /// // A full range clears the vector, like `clear()` does
-    /// vec.drain(..);
-    /// assert!(vec.is_empty());
-    /// ```
-    pub fn drain<R>(&mut self, range: R) -> Drain<T, N>
-    where
-        R: RangeBounds<u32>,
-    {
-        let start = match range.start_bound() {
-            Bound::Excluded(i) => i
-                .checked_add(1)
-                .unwrap_or_else(|| env::panic_str(ERR_INDEX_OUT_OF_BOUNDS)),
-            Bound::Included(i) => *i,
-            Bound::Unbounded => 0,
-        };
-        let end = match range.end_bound() {
-            Bound::Excluded(i) => *i,
-            Bound::Included(i) => i
-                .checked_add(1)
-                .unwrap_or_else(|| env::panic_str(ERR_INDEX_OUT_OF_BOUNDS)),
-            Bound::Unbounded => self.len(),
-        };
+    // /// Creates a draining iterator that removes the specified range in the vector
+    // /// and yields the removed items.
+    // ///
+    // /// When the iterator **is** dropped, all elements in the range are removed
+    // /// from the vector, even if the iterator was not fully consumed. If the
+    // /// iterator **is not** dropped (with [`mem::forget`](std::mem::forget) for example),
+    // /// the collection will be left in an inconsistent state.
+    // ///
+    // /// This will not panic on invalid ranges (`end > length` or `end < start`) and instead the
+    // /// iterator will just be empty.
+    // ///
+    // /// # Examples
+    // ///
+    // /// ```
+    // /// use near_sdk::store::Vector;
+    // ///
+    // /// let mut vec: Vector<u32> = Vector::new(b"v");
+    // /// vec.extend(vec![1, 2, 3]);
+    // ///
+    // /// let u: Vec<_> = vec.drain(1..).collect();
+    // /// assert_eq!(vec.iter().copied().collect::<Vec<_>>(), &[1]);
+    // /// assert_eq!(u, &[2, 3]);
+    // ///
+    // /// // A full range clears the vector, like `clear()` does
+    // /// vec.drain(..);
+    // /// assert!(vec.is_empty());
+    // /// ```
+    // pub fn drain<R>(&mut self, range: R) -> Drain<T, N>
+    // where
+    //     R: RangeBounds<u32>,
+    // {
+    //     let start = match range.start_bound() {
+    //         Bound::Excluded(i) => i
+    //             .checked_add(1)
+    //             .unwrap_or_else(|| env::panic_str(ERR_INDEX_OUT_OF_BOUNDS)),
+    //         Bound::Included(i) => *i,
+    //         Bound::Unbounded => 0,
+    //     };
+    //     let end = match range.end_bound() {
+    //         Bound::Excluded(i) => *i,
+    //         Bound::Included(i) => i
+    //             .checked_add(1)
+    //             .unwrap_or_else(|| env::panic_str(ERR_INDEX_OUT_OF_BOUNDS)),
+    //         Bound::Unbounded => self.len(),
+    //     };
 
-        // Note: don't need to do bounds check if end < start, will just return None when iterating
-        // This will also cap the max length at the length of the vector.
-        Drain::new(
-            self,
-            Range {
-                start,
-                end: core::cmp::min(end, self.len()),
-            },
-        )
-    }
+    //     // Note: don't need to do bounds check if end < start, will just return None when iterating
+    //     // This will also cap the max length at the length of the vector.
+    //     Drain::new(
+    //         self,
+    //         Range {
+    //             start,
+    //             end: core::cmp::min(end, self.len()),
+    //         },
+    //     )
+    // }
 }
 
 impl<T, const N: usize> fmt::Debug for ChunkedVector<T, N>
@@ -606,6 +621,8 @@ mod tests {
             baseline.push(value);
         }
         for _ in 0..500 {
+            println!("loop");
+            assert!(Iterator::eq(vec.iter(), baseline.iter()));
             let index = rng.gen::<u32>() % vec.len();
             let old_value0 = vec[index];
             let old_value1 = vec.swap_remove(index);
@@ -613,6 +630,10 @@ mod tests {
             let last_index = baseline.len() - 1;
             baseline.swap(index as usize, last_index);
             baseline.pop();
+            if old_value0 != old_value1 {
+                println!("{} {} {}", old_value0, old_value1, old_value2);
+                println!("{} {}", vec[vec.len - 1], baseline[baseline.len() - 1]);
+            }
             assert_eq!(old_value0, old_value1);
             assert_eq!(old_value0, old_value2);
         }
@@ -739,64 +760,63 @@ mod tests {
         assert_eq!(vec.iter().count(), baseline.len());
     }
 
-    #[test]
-    fn drain_iterator() {
-        let mut vec = ChunkedVector::<_>::new(b"v");
-        let mut baseline = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        vec.extend(baseline.clone());
+    // #[test]
+    // fn drain_iterator() {
+    //     let mut vec = ChunkedVector::<_>::new(b"v");
+    //     let mut baseline = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    //     vec.extend(baseline.clone());
 
-        assert!(Iterator::eq(vec.drain(1..=3), baseline.drain(1..=3)));
-        assert_eq!(
-            vec.iter().copied().collect::<Vec<_>>(),
-            vec![0, 4, 5, 6, 7, 8, 9]
-        );
+    //     assert!(Iterator::eq(vec.drain(1..=3), baseline.drain(1..=3)));
+    //     assert_eq!(
+    //         vec.iter().copied().collect::<Vec<_>>(),
+    //         vec![0, 4, 5, 6, 7, 8, 9]
+    //     );
 
-        // Test incomplete drain
-        {
-            let mut drain = vec.drain(0..3);
-            let mut b_drain = baseline.drain(0..3);
-            assert_eq!(drain.next(), b_drain.next());
-            assert_eq!(drain.next(), b_drain.next());
-        }
+    //     // Test incomplete drain
+    //     {
+    //         let mut drain = vec.drain(0..3);
+    //         let mut b_drain = baseline.drain(0..3);
+    //         assert_eq!(drain.next(), b_drain.next());
+    //         assert_eq!(drain.next(), b_drain.next());
+    //     }
 
-        // 7 elements, drained 3
-        assert_eq!(vec.len(), 4);
+    //     // 7 elements, drained 3
+    //     assert_eq!(vec.len(), 4);
 
-        // Test incomplete drain over limit
-        {
-            let mut drain = vec.drain(2..);
-            let mut b_drain = baseline.drain(2..);
-            assert_eq!(drain.next(), b_drain.next());
-        }
+    //     // Test incomplete drain over limit
+    //     {
+    //         let mut drain = vec.drain(2..);
+    //         let mut b_drain = baseline.drain(2..);
+    //         assert_eq!(drain.next(), b_drain.next());
+    //     }
 
-        // Drain rest
-        assert!(Iterator::eq(vec.drain(..), baseline.drain(..)));
+    //     // Drain rest
+    //     assert!(Iterator::eq(vec.drain(..), baseline.drain(..)));
 
-        // Test double ended iterator functions
-        let mut vec = ChunkedVector::<_>::new(b"v");
-        let mut baseline = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
-        vec.extend(baseline.clone());
+    //     // Test double ended iterator functions
+    //     let mut vec = ChunkedVector::<_>::new(b"v");
+    //     let mut baseline = vec![0u8, 1, 2, 3, 4, 5, 6, 7, 8, 9];
+    //     vec.extend(baseline.clone());
 
-        {
-            let mut drain = vec.drain(1..8);
-            let mut b_drain = baseline.drain(1..8);
-            assert_eq!(drain.nth(1), b_drain.nth(1));
-            assert_eq!(drain.nth_back(2), b_drain.nth_back(2));
-            assert_eq!(drain.len(), b_drain.len());
-        }
+    //     {
+    //         let mut drain = vec.drain(1..8);
+    //         let mut b_drain = baseline.drain(1..8);
+    //         assert_eq!(drain.nth(1), b_drain.nth(1));
+    //         assert_eq!(drain.nth_back(2), b_drain.nth_back(2));
+    //         assert_eq!(drain.len(), b_drain.len());
+    //     }
 
-        assert_eq!(vec.len() as usize, baseline.len());
-        assert!(Iterator::eq(vec.iter(), baseline.iter()));
+    //     assert_eq!(vec.len() as usize, baseline.len());
+    //     assert!(Iterator::eq(vec.iter(), baseline.iter()));
 
-        assert!(Iterator::eq(vec.drain(..), baseline.drain(..)));
-        near_sdk::mock::with_mocked_blockchain(|m| assert!(m.take_storage().is_empty()));
-    }
+    //     assert!(Iterator::eq(vec.drain(..), baseline.drain(..)));
+    //     near_sdk::mock::with_mocked_blockchain(|m| assert!(m.take_storage().is_empty()));
+    // }
 
     #[derive(Arbitrary, Debug)]
     enum Op {
         Push(u8),
         Pop,
-        Set(u32, u8),
         Remove(u32),
         Flush,
         Reset,
@@ -829,18 +849,6 @@ mod tests {
                         Op::Pop => {
                             assert_eq!(sv.pop(), mv.pop());
                             assert_eq!(sv.len() as usize, mv.len());
-                        }
-                        Op::Set(k, v) => {
-                            if sv.is_empty() {
-                                continue;
-                            }
-                            let k = k % sv.len();
-
-                            sv.set(k, v);
-                            mv[k as usize] = v;
-
-                            // Extra get just to make sure set happened correctly
-                            assert_eq!(sv[k], mv[k as usize]);
                         }
                         Op::Remove(i) => {
                             if sv.is_empty() {
@@ -887,7 +895,7 @@ mod tests {
         use borsh::{BorshDeserialize, BorshSerialize};
 
         let mut vec = ChunkedVector::<_>::new(b"v");
-        vec.push("Some data");
+        vec.push("Some data".to_string());
         let serialized = vec.try_to_vec().unwrap();
 
         // Expected to serialize len then prefix

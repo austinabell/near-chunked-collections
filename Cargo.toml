@@ -4,7 +4,10 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
-borsh = "0.9.3"
+# Note this override is just because the array bound requirement was removed in
+# https://github.com/near/borsh-rs/commit/aec5a4e9792361859cbb4a852b17317c738fc428
+# and it's painful to implement this without.
+borsh = { git = "https://github.com/near/borsh-rs", rev = "aec5a4e9792361859cbb4a852b17317c738fc428"}
 near-sdk = { version = "4.1.1", default-features = false, features = ["unstable"] }
 
 [dev-dependencies]
@@ -15,4 +18,4 @@ arbitrary = { version = ">=1.0, <1.1.4", features = ["derive"] }
 derive_arbitrary = ">=1.0, <=1.1.6"
 
 [patch.crates-io]
-near-sdk = { git = "https://github.com/austinabell/near-sdk-rs", rev = "d8eebeed7aa2ab9946c86ae2743772e29186574d" }
+near-sdk = { git = "https://github.com/austinabell/near-sdk-rs", rev = "3c9786a30c7a0fe71f1cc5aa13fb84d101d54f41" }

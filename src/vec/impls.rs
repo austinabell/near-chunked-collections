@@ -4,15 +4,6 @@ use super::iter::{Iter, IterMut};
 use super::{ChunkedVector, ERR_INDEX_OUT_OF_BOUNDS};
 use near_sdk::env;
 
-impl<T, const N: usize> Drop for ChunkedVector<T, N>
-where
-    T: BorshSerialize,
-{
-    fn drop(&mut self) {
-        self.flush()
-    }
-}
-
 impl<'a, T, const N: usize> IntoIterator for &'a ChunkedVector<T, N>
 where
     T: BorshSerialize + BorshDeserialize,
