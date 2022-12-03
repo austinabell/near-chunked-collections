@@ -618,8 +618,6 @@ mod tests {
             baseline.push(value);
         }
         for _ in 0..500 {
-            println!("loop");
-            assert!(Iterator::eq(vec.iter(), baseline.iter()));
             let index = rng.gen::<u32>() % vec.len();
             let old_value0 = vec[index];
             let old_value1 = vec.swap_remove(index);
@@ -627,10 +625,6 @@ mod tests {
             let last_index = baseline.len() - 1;
             baseline.swap(index as usize, last_index);
             baseline.pop();
-            if old_value0 != old_value1 {
-                println!("{} {} {}", old_value0, old_value1, old_value2);
-                println!("{} {}", vec[vec.len - 1], baseline[baseline.len() - 1]);
-            }
             assert_eq!(old_value0, old_value1);
             assert_eq!(old_value0, old_value2);
         }
@@ -694,10 +688,10 @@ mod tests {
             assert_eq!(baseline.pop(), vec.pop());
         }
         if cfg!(feature = "expensive-debug") {
-            assert_eq!(format!("{:#?}", vec), format!("{:#?}", baseline));
+            assert_eq!(format!("{vec:#?}"), format!("{baseline:#?}"));
         } else {
             assert_eq!(
-                format!("{:?}", vec),
+                format!("{vec:?}"),
                 format!("Vector {{ len: 5, prefix: {:?} }}", vec.values.prefix)
             );
         }
@@ -716,12 +710,12 @@ mod tests {
         let baseline: Vec<_> = baseline.into_iter().map(TestType).collect();
         if cfg!(feature = "expensive-debug") {
             assert_eq!(
-                format!("{:#?}", deserialize_only_vec),
-                format!("{:#?}", baseline)
+                format!("{deserialize_only_vec:#?}"),
+                format!("{baseline:#?}")
             );
         } else {
             assert_eq!(
-                format!("{:?}", deserialize_only_vec),
+                format!("{deserialize_only_vec:?}"),
                 format!(
                     "Vector {{ len: 5, prefix: {:?} }}",
                     deserialize_only_vec.values.prefix
